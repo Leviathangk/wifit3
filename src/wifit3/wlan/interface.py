@@ -71,6 +71,7 @@ class WlanInterface:
         self._tune_task: Optional[asyncio.Task] = None
         self._is_hopping = False
         self._hop_lock = asyncio.Lock()
+        self._tune_lock = asyncio.Lock()
 
         self.driver.register_rx_callback(self._on_frame_parsed)
         self.driver.register_disconnect_callback(self._on_device_lost)
@@ -97,12 +98,16 @@ class WlanInterface:
             raise
 
     async def set_channel(self, channel: int, scan: bool = False) -> bool:
-        """Tune to ``channel`` via the driver. ``scan=True`` (channel hopper) hints
-        a transient hop so the driver may skip per-hop calibration."""
-        success = await self.driver.set_channel(channel, scan=scan)
-        if success:
-            self.current_channel = channel
-        return success
+        """Tune to ``channel``, one tune at a time; a cancelled caller doesn't cut the tune short.
+        ``scan=True`` (channel hopper) lets the driver skip per-hop calibration."""
+        return await asyncio.shield(self._serialized_set_channel(channel, scan))
+
+    async def _serialized_set_channel(self, channel: int, scan: bool) -> bool:
+        async with self._tune_lock:
+            success = await self.driver.set_channel(channel, scan=scan)
+            if success:
+                self.current_channel = channel
+            return success
 
     async def set_fake_mac(self, mac: Any = None, bssid: Any = None) -> Optional[str]:
         """Enable active-monitor (HW-ACK frames addressed to our forged STA) and return the MAC the
